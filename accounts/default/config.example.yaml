@@ -1,0 +1,34 @@
+# Example YAML config. Copy this file for each account and fill in your details.
+credentials:
+  username: ""        # Instagram handle (also used for folder naming)
+  password: ""        # Instagram password
+  openai_api_key: ""  # OpenAI API key
+
+hashtags: []          # e.g. ["photography", "travel"]
+
+engagement:
+  max_posts_per_tag: 5
+  scroll_rounds: 1
+  post_order: top
+  like_posts: true
+  save_posts: true
+  like_comments: true
+  enable_comment_replies: true
+  max_comment_replies: 2
+
+commenting:
+  max_comment_likes: 3
+  min_comment_words: 4
+
+stories:
+  enable_story_viewing: true
+  story_view_delay_ms: 5000
+  max_story_views: 5
+  story_like_probability: 50
+  max_story_likes_per_user: 3
+  max_story_views_per_user: 5
+
+# General pacing
+action_delay_ms: 1500
+debug_reply_plan: false
+headless: false

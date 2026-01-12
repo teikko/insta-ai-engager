@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Environment
+.env
+.env.*
+
+# Local data and sessions
+user_data/
+accounts/*
+!accounts/default/
+accounts/default/*
+!accounts/default/config.example.yaml
+
+# OS
+.DS_Store
