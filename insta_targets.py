@@ -250,6 +250,30 @@ async def run(account: str, mode: str):
                 await pw.press("Enter")                                # fallback: submit via keyboard
             await page.wait_for_timeout(6000)
 
+        # --- MANUAL LOGIN MODE: just open the browser, let the human log in at their own pace ---
+        if mode == "login":
+            if await logged_in():
+                print("✅ already logged in — session is saved, nothing to do.")
+                await context.close()
+                return
+            await page.goto("https://www.instagram.com/accounts/login/", timeout=25000,
+                            wait_until="domcontentloaded")
+            await dismiss_cookie()
+            print("👉 Kirjaudu KÄSIN avautuvassa selaimessa (täytä tunnus+salasana, klikkaa captcha/2FA).")
+            print("   Odotan enintään 15 min ja tarkistan 10 s välein…")
+            for attempt in range(1, 91):                        # 90 × 10s = 15 min
+                await page.wait_for_timeout(10000)
+                if await logged_in():
+                    print(f"✅ Kirjautuminen onnistui! Sessio tallennettu (accounts/{account}/user_data).")
+                    print("   Aja nyt:  insta_targets.py {} validate".format(account))
+                    await context.close()
+                    return
+                if attempt % 3 == 0:
+                    print(f"   …odotan yhä ({attempt*10}s), kirjaudu loppuun selaimessa.")
+            print("❌ Ei kirjautunut 15 min sisällä — aja uudelleen kun ehdit.")
+            await context.close()
+            return
+
         # --- HARD LOGIN GATE: nothing touches targets until login is truly confirmed ---
         if await logged_in():
             print("✅ already logged in (saved session)")
@@ -302,7 +326,7 @@ async def run(account: str, mode: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("account")
-    ap.add_argument("mode", nargs="?", default="validate", choices=["validate", "engage"])
+    ap.add_argument("mode", nargs="?", default="validate", choices=["login", "validate", "engage"])
     a = ap.parse_args()
     asyncio.run(run(a.account, a.mode))
 
