@@ -172,6 +172,15 @@ async def like_recent(page, handle: str, n: int) -> int:
         try:
             await page.goto("https://www.instagram.com" + h, timeout=20000, wait_until="domcontentloaded")
             await page.wait_for_timeout(1200)
+            # already liked? then the Unlike icon is present — skip (don't unlike)
+            already = False
+            for lbl in UNLIKE_LBL:
+                if await page.locator(f"section svg[aria-label='{lbl}']").count() > 0:
+                    already = True; break
+            if already:
+                print(f"    · like SKIP (already liked)  {h}")
+                await page.wait_for_timeout(700)
+                continue
             btn = None
             for lbl in LIKE_LBL:
                 loc = page.locator(f"section svg[aria-label='{lbl}']")
@@ -180,9 +189,12 @@ async def like_recent(page, handle: str, n: int) -> int:
             if btn:
                 await btn.click()
                 liked += 1
+                print(f"    · LIKED  {h}")
                 await page.wait_for_timeout(900)
+            else:
+                print(f"    · like NO-BUTTON  {h}")
         except Exception as e:
-            print(f"    · like fail: {str(e)[:50]}")
+            print(f"    · like FAIL ({str(e)[:40]})  {h}")
     await page.goto(f"https://www.instagram.com/{handle}/", timeout=20000, wait_until="domcontentloaded")
     return liked
 
@@ -195,10 +207,13 @@ async def view_stories(page, handle: str) -> bool:
         await page.wait_for_timeout(2500)
         if "/stories/" not in page.url:
             return False
+        segments = 0
         for _ in range(4):
             await page.keyboard.press("ArrowRight")
             await page.wait_for_timeout(1800)
+            segments += 1
         await page.keyboard.press("Escape")
+        print(f"    · stories viewed (~{segments} segments)")
         return True
     except Exception:
         return False
@@ -342,6 +357,7 @@ async def run(account: str, mode: str):
                 await jitter(page, cfg["delay"] // 2)
             if cfg["follow"]:                             # follow last — most rate-limited action
                 r = await do_follow(page); acts.append(f"follow:{r}")
+                print(f"    · follow → {r}")
                 if r == "followed":
                     mark_done(account, handle, "follow")
             print(f"       → {' '.join(acts)}")
