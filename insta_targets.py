@@ -130,15 +130,14 @@ async def follower_count(page, handle: str):
 
 
 async def _primary_button(page):
-    # IG renders the follow CTA as either a <button> OR a <div role=button> (varies by
-    # profile / A-B variant — same lesson as the login button). Match both.
+    # Match the CTA by ARIA role + EXACT accessible name, scoped to the profile header.
+    # role=button covers both <button> and <div role=button>; exact=True avoids matching
+    # bios that merely contain the word "Follow" (e.g. "Follow us for local tips").
+    header = page.locator("header").first
     for txt in FOLLOW_TXT + FOLLOWING_TXT:
-        loc = page.locator(
-            f"header button:has-text('{txt}'), main header button:has-text('{txt}'), "
-            f"header div[role='button']:has-text('{txt}'), "
-            f"main header div[role='button']:has-text('{txt}')")
+        loc = header.get_by_role("button", name=txt, exact=True)
         if await loc.count() > 0:
-            return loc.first, (await loc.first.inner_text()).strip()
+            return loc.first, txt
     return None, None
 
 
