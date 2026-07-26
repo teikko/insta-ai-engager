@@ -2,9 +2,20 @@
 credentials:
   username: ""        # Instagram handle (also used for folder naming)
   password: ""        # Instagram password
-  openai_api_key: ""  # OpenAI API key
+  openai_api_key: ""  # OpenAI API key (only needed for insta_bot.py commenting)
 
 hashtags: []          # e.g. ["photography", "travel"]
+
+# --- insta_targets.py (account-targeted: validate / follow / like / stories) ---
+# Accounts to process (or put one handle per line in accounts/<account>/targets.txt).
+targets: []           # e.g. ["wildswimmingfinland", "visitkalajoki"]
+target_engagement:
+  follow: true
+  like_recent: 2        # like N most-recent posts per account
+  view_stories: true
+  max_targets_per_run: 15   # keep low — FOLLOWING is the most rate-limited action
+  action_delay_ms: 4000     # slower than the hashtag bot = safer
+  headless: false
 
 engagement:
   max_posts_per_tag: 5

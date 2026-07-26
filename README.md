@@ -29,6 +29,23 @@ python insta_bot.py <account>
 
 If `<account>` is omitted, it defaults to `default`.
 
+## Account-targeted mode (`insta_targets.py`)
+
+Takes a **list of accounts** (your follow list) instead of hashtags, and never
+comments (no OpenAI key needed). Two modes:
+
+```bash
+python insta_targets.py <account> validate   # read-only: confirm each profile exists + follower count (SAFE)
+python insta_targets.py <account> engage     # follow (if not already) + like N recent posts + view stories
+```
+
+Configure `targets:` in `config.yaml` (or one handle per line in
+`accounts/<account>/targets.txt`) and the `target_engagement:` block. Progress is
+tracked in `accounts/<account>/targets_done.csv` so re-runs skip already-followed
+accounts. **Start with `validate`** (safe), watch a headful `engage` run, and keep
+`max_targets_per_run` low — automated **following** is the most rate-limited /
+ban-prone action.
+
 ## Manual login session (optional)
 
 ```bash
