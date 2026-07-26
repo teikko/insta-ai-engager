@@ -219,22 +219,35 @@ async def run(account: str, mode: str):
             await page.goto("https://www.instagram.com/accounts/login/", timeout=25000, wait_until="domcontentloaded")
             await dismiss_cookie()
             try:                                              # wait for the form (SPA renders late)
-                pw = page.locator("input[type='password']")
+                pw = page.locator("input[type='password'], input[name='pass']")
                 await pw.first.wait_for(state="visible", timeout=12000)
             except Exception:
                 print("⚠️ Login form did not appear.")
                 return
-            user = page.locator("input[name='username'], input[autocomplete='username'], "
-                                "input[type='text']").first
+            # IG's actual DOM: fields are name=email / name=pass; button is a <div role=button aria-label="Log in">
+            user = page.locator("input[name='email'], input[name='username'], "
+                                "input[autocomplete='username'], input[type='text']").first
+            pw = pw.first
             print("🔑 Filling login form…")
-            await user.click(); await user.fill(cfg["username"]); await page.wait_for_timeout(300)
-            await pw.first.click(); await pw.first.fill(cfg["password"]); await page.wait_for_timeout(300)
-            btn = page.locator("button[type='submit']:has-text('Log in'), "
-                               "button[type='submit']:has-text('Kirjaudu'), button:has-text('Log in')")
+            await user.click()
+            await user.press_sequentially(cfg["username"], delay=40)   # per-key so React registers it
+            await page.wait_for_timeout(300)
+            await pw.click()
+            await pw.press_sequentially(cfg["password"], delay=40)
+            await page.wait_for_timeout(400)
+            btn = page.locator("div[role='button'][aria-label='Log in'], "
+                               "div[role='button'][aria-label='Kirjaudu'], "
+                               "button[type='submit']:has-text('Log in'), "
+                               "button:has-text('Log in')")
+            clicked = False
             if await btn.count() > 0:
-                await btn.first.click()
-            else:
-                await pw.first.press("Enter")
+                try:
+                    await btn.first.click(timeout=4000)
+                    clicked = True
+                except Exception:
+                    pass
+            if not clicked:
+                await pw.press("Enter")                                # fallback: submit via keyboard
             await page.wait_for_timeout(6000)
 
         # --- HARD LOGIN GATE: nothing touches targets until login is truly confirmed ---
