@@ -215,16 +215,33 @@ async def run(account: str, mode: str):
             except Exception:
                 return False
 
+        async def do_login():
+            await page.goto("https://www.instagram.com/accounts/login/", timeout=25000, wait_until="domcontentloaded")
+            await dismiss_cookie()
+            try:                                              # wait for the form (SPA renders late)
+                pw = page.locator("input[type='password']")
+                await pw.first.wait_for(state="visible", timeout=12000)
+            except Exception:
+                print("⚠️ Login form did not appear.")
+                return
+            user = page.locator("input[name='username'], input[autocomplete='username'], "
+                                "input[type='text']").first
+            print("🔑 Filling login form…")
+            await user.click(); await user.fill(cfg["username"]); await page.wait_for_timeout(300)
+            await pw.first.click(); await pw.first.fill(cfg["password"]); await page.wait_for_timeout(300)
+            btn = page.locator("button[type='submit']:has-text('Log in'), "
+                               "button[type='submit']:has-text('Kirjaudu'), button:has-text('Log in')")
+            if await btn.count() > 0:
+                await btn.first.click()
+            else:
+                await pw.first.press("Enter")
+            await page.wait_for_timeout(6000)
+
         # --- HARD LOGIN GATE: nothing touches targets until login is truly confirmed ---
         if await logged_in():
             print("✅ already logged in (saved session)")
         else:
-            await page.goto("https://www.instagram.com/accounts/login/", timeout=25000, wait_until="domcontentloaded")
-            await dismiss_cookie()
-            await page.wait_for_timeout(1200)
-            if await page.locator("input[name='username']").count() > 0:
-                print("🔑 Attempting automatic login…")
-                await perform_login(page, cfg["username"], cfg["password"])
+            await do_login()
             ok = False
             for attempt in range(1, 21):
                 if await logged_in():
