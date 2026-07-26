@@ -89,6 +89,24 @@ async def jitter(page, ms: int):
     await page.wait_for_timeout(ms + random.randint(0, ms // 2))
 
 
+async def human_scroll(page, rounds: int = None):
+    """Idle, human-ish scrolling on the current page — a few small wheel nudges
+    with pauses, then scroll back up a bit. Makes engagement look less robotic."""
+    rounds = rounds if rounds is not None else random.randint(2, 4)
+    for _ in range(rounds):
+        try:
+            await page.mouse.wheel(0, random.randint(350, 900))
+        except Exception:
+            return
+        await page.wait_for_timeout(random.randint(700, 2200))
+    if random.random() < 0.6:                     # sometimes scroll back toward top
+        try:
+            await page.mouse.wheel(0, -random.randint(300, 700))
+            await page.wait_for_timeout(random.randint(500, 1400))
+        except Exception:
+            pass
+
+
 async def follower_count(page, handle: str):
     """Read-only: navigate to a profile and parse the follower count from og:description.
     Returns (exists: bool, followers: str|None)."""
@@ -307,17 +325,23 @@ async def run(account: str, mode: str):
             if mode == "validate" or exists is not True:
                 await jitter(page, cfg["delay"] // 2)
                 continue
+            # land on the profile, look around a bit before doing anything
+            await human_scroll(page)
             acts = []
-            if cfg["follow"]:
+            if cfg["view_stories"]:                       # stories first (least committal)
+                sv = await view_stories(page, handle); acts.append(f"story:{'y' if sv else 'n'}")
+                await jitter(page, cfg["delay"] // 2)
+            if cfg["like_recent"]:
+                liked = await like_recent(page, handle, cfg["like_recent"]); acts.append(f"liked:{liked}")
+                await human_scroll(page, rounds=random.randint(1, 3))
+                await jitter(page, cfg["delay"] // 2)
+            if cfg["follow"]:                             # follow last — most rate-limited action
                 r = await do_follow(page); acts.append(f"follow:{r}")
                 if r == "followed":
                     mark_done(account, handle, "follow")
-            if cfg["like_recent"]:
-                liked = await like_recent(page, handle, cfg["like_recent"]); acts.append(f"liked:{liked}")
-            if cfg["view_stories"]:
-                sv = await view_stories(page, handle); acts.append(f"story:{'y' if sv else 'n'}")
             print(f"       → {' '.join(acts)}")
             mark_done(account, handle, "engage")
+            await human_scroll(page, rounds=random.randint(1, 2))
             await jitter(page, cfg["delay"])
         await context.close()
     print("done.")
