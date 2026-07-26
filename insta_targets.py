@@ -195,22 +195,59 @@ async def run(account: str, mode: str):
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(str(paths["user_data"]), headless=cfg["headless"])
         page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto("https://www.instagram.com/", timeout=20000, wait_until="domcontentloaded")
-        try:
-            b = page.locator("button:has-text('Allow all cookies'), button:has-text('Salli kaikki evästeet')")
-            if await b.count() > 0:
-                await b.first.click(force=True)
-        except Exception:
-            pass
-        await page.wait_for_timeout(1000)
-        if any(t in page.url for t in ("/accounts/login", "/accounts/onetap")) or await page.locator("input[name='username']").count() > 0:
-            await perform_login(page, cfg["username"], cfg["password"])
-            await page.goto("https://www.instagram.com/", timeout=20000, wait_until="domcontentloaded")
+
+        async def dismiss_cookie():
+            try:
+                b = page.locator("button:has-text('Allow all cookies'), button:has-text('Salli kaikki evästeet'), "
+                                 "button:has-text('Only allow essential'), button:has-text('Decline optional')")
+                if await b.count() > 0:
+                    await b.first.click(force=True); await page.wait_for_timeout(800)
+            except Exception:
+                pass
+
+        async def logged_in() -> bool:
+            # /accounts/edit/ REQUIRES auth — it redirects to /accounts/login/ when logged out.
+            # This is a real login check (unlike the public home page, which fooled the old code).
+            try:
+                await page.goto("https://www.instagram.com/accounts/edit/", timeout=25000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2000)
+                return "/accounts/login" not in page.url and "/accounts/edit" in page.url
+            except Exception:
+                return False
+
+        # --- HARD LOGIN GATE: nothing touches targets until login is truly confirmed ---
+        if await logged_in():
+            print("✅ already logged in (saved session)")
         else:
-            print("✅ session remembered")
+            await page.goto("https://www.instagram.com/accounts/login/", timeout=25000, wait_until="domcontentloaded")
+            await dismiss_cookie()
+            await page.wait_for_timeout(1200)
+            if await page.locator("input[name='username']").count() > 0:
+                print("🔑 Attempting automatic login…")
+                await perform_login(page, cfg["username"], cfg["password"])
+            ok = False
+            for attempt in range(1, 21):
+                if await logged_in():
+                    ok = True
+                    break
+                print(f"⚠️ NOT logged in yet (2FA / checkpoint / wrong creds?). Finish login in the "
+                      f"OPEN BROWSER via remote desktop. Re-checking in 15s… [{attempt}/20]")
+                await page.wait_for_timeout(15000)
+            if not ok:
+                print("❌ Login not confirmed — aborting WITHOUT touching any targets.")
+                await context.close()
+                return
+            print("✅ login confirmed")
 
         for i, handle in enumerate(todo, 1):
-            exists, followers = await follower_count(page, handle)
+            try:
+                exists, followers = await follower_count(page, handle)
+            except Exception as e:
+                if "closed" in str(e).lower():
+                    print(f"⚠️ Browser/page closed at [{i}/{len(todo)}] — stopping cleanly. Re-run to finish.")
+                    break
+                print(f"[{i}/{len(todo)}] @{handle}: error {str(e)[:60]}")
+                continue
             tag = "OK" if exists else ("MISSING" if exists is False else "?")
             print(f"[{i}/{len(todo)}] @{handle:24} {tag:8} followers={followers}")
             if mode == "validate" or exists is not True:
