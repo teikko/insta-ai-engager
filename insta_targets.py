@@ -130,8 +130,13 @@ async def follower_count(page, handle: str):
 
 
 async def _primary_button(page):
+    # IG renders the follow CTA as either a <button> OR a <div role=button> (varies by
+    # profile / A-B variant — same lesson as the login button). Match both.
     for txt in FOLLOW_TXT + FOLLOWING_TXT:
-        loc = page.locator(f"header button:has-text('{txt}'), main header button:has-text('{txt}')")
+        loc = page.locator(
+            f"header button:has-text('{txt}'), main header button:has-text('{txt}'), "
+            f"header div[role='button']:has-text('{txt}'), "
+            f"main header div[role='button']:has-text('{txt}')")
         if await loc.count() > 0:
             return loc.first, (await loc.first.inner_text()).strip()
     return None, None
