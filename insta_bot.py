@@ -93,10 +93,17 @@ def load_account_settings(account_name: str) -> Dict[str, Any]:
     password = credentials.get("password")
     api_key = credentials.get("openai_api_key")
 
+    # Password is optional when a saved browser session exists (user_data/ non-empty):
+    # the persistent context handles auth, so the password needn't live in the file.
+    user_data_dir = account_dir / "user_data"
+    has_session = user_data_dir.is_dir() and any(user_data_dir.iterdir())
+    if not password and not has_session:
+        raise ValueError(f"Password missing in config for '{account_name}' and no saved session.")
     if not password:
-        raise ValueError(f"Password missing in config for '{account_name}'.")
+        print(f"ℹ️ No password in config for '{account_name}' — relying on the saved session.")
+    # OpenAI key is optional: without it the bot likes/views stories but never comments.
     if not api_key:
-        raise ValueError(f"OpenAI API key missing in config for '{account_name}'.")
+        print(f"ℹ️ No OpenAI API key for '{account_name}' — AI commenting disabled (like/stories only).")
 
     settings: Dict[str, Any] = DEFAULT_SETTINGS.copy()
     engagement = raw.get("engagement") or {}
@@ -189,7 +196,7 @@ def save_viewed_user(csv_path: Path, username: str) -> None:
 # ============ OPENAI HELPERS ============
 async def describe_image(image_url: str) -> str:
     if client is None:
-        raise RuntimeError("OpenAI client is not initialized.")
+        return ""   # commenting disabled (no API key) — skip vision
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -252,7 +259,7 @@ async def generate_comment_plan(
     allow_replies: bool = True,
 ) -> Dict[str, Any]:
     if client is None:
-        raise RuntimeError("OpenAI client is not initialized.")
+        return {"main_comment": "", "replies": []}   # commenting disabled (no API key)
 
     instruction = (
         "You are a kind, emotionally intelligent Instagram creator. "
@@ -1133,7 +1140,7 @@ async def main() -> None:
 
     try:
         global client
-        client = AsyncOpenAI(api_key=settings["openai_api_key"])
+        client = AsyncOpenAI(api_key=settings["openai_api_key"]) if settings.get("openai_api_key") else None
         await process_account(settings)
     except Exception as e:
         print(f"❌ Fatal error for @{settings['username']}: {e}")
