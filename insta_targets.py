@@ -47,8 +47,12 @@ def load_cfg(account: str) -> dict:
         raise SystemExit(f"Missing config: {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     cred = raw.get("credentials") or {}
-    if not cred.get("username") or not cred.get("password"):
-        raise SystemExit("credentials.username/password required in config.yaml")
+    # Username is required. Password is OPTIONAL: once a session is saved in user_data/
+    # the persistent context handles auth, so we don't keep the (leaked-prone) password in
+    # the file. If no session exists and password is blank, the login gate pauses for a
+    # manual login instead of failing here.
+    if not cred.get("username"):
+        raise SystemExit("credentials.username required in config.yaml")
     targets = raw.get("targets") or []
     if isinstance(targets, str):
         targets = [t.strip() for t in targets.replace(",", "\n").splitlines() if t.strip()]
@@ -57,7 +61,7 @@ def load_cfg(account: str) -> dict:
         targets = [l.strip().lstrip("@") for l in tfile.read_text().splitlines() if l.strip() and not l.startswith("#")]
     te = raw.get("target_engagement") or {}
     return {
-        "username": cred["username"], "password": cred["password"],
+        "username": cred["username"], "password": cred.get("password", ""),
         "targets": [t.lstrip("@") for t in targets],
         "follow": bool(te.get("follow", True)),
         "like_recent": int(te.get("like_recent", 2)),
@@ -83,6 +87,109 @@ def load_done(account: str) -> set:
 def mark_done(account: str, handle: str, action: str):
     with _done_csv(account).open("a", newline="") as f:
         csv.writer(f).writerow([handle, action, datetime.now().isoformat(timespec="seconds")])
+
+
+UNFOLLOW_TXT = ("Unfollow", "Lopeta seuraaminen", "Lopeta seuranta")
+UNFOLLOW_AFTER_DAYS = 5
+
+
+def _unfollowed_csv(account: str) -> Path:
+    return ACCOUNTS_ROOT / account / "unfollowed.csv"
+
+
+def load_unfollowed(account: str) -> set:
+    p = _unfollowed_csv(account)
+    if not p.exists():
+        return set()
+    with p.open() as f:
+        return {row[0] for row in csv.reader(f) if row}
+
+
+def mark_unfollowed(account: str, handle: str, note: str):
+    with _unfollowed_csv(account).open("a", newline="") as f:
+        csv.writer(f).writerow([handle, note, datetime.now().isoformat(timespec="seconds")])
+
+
+def unfollow_candidates(account: str, protect: set, days: int = UNFOLLOW_AFTER_DAYS) -> list:
+    """Handles WE followed via the engage run (targets_done.csv 'follow' rows) at least `days` ago.
+    Accounts followed for credibility at the start never appear in that CSV, so they are structurally
+    protected; `never_unfollow` in config is an extra explicit guard."""
+    p = _done_csv(account)
+    if not p.exists():
+        return []
+    cutoff = datetime.now().timestamp() - days * 86400
+    already = load_unfollowed(account)
+    out = []
+    with p.open() as f:
+        for row in csv.reader(f):
+            if len(row) >= 3 and row[1] == "follow":
+                h = row[0].lstrip("@")
+                if h in already or h in protect or h in out:
+                    continue
+                if datetime.fromisoformat(row[2]).timestamp() <= cutoff:
+                    out.append(h)
+    return out
+
+
+async def own_followers(page, me: str):
+    """Set of handles that follow @me, read from the followers dialog. None = could not verify."""
+    await page.goto(f"https://www.instagram.com/{me}/", wait_until="domcontentloaded", timeout=40000)
+    await page.wait_for_timeout(3500)
+    try:
+        await page.locator("header").get_by_text(re.compile(r"followers|seuraajaa", re.I)).first.click(timeout=15000)
+        dlg = page.locator('div[role="dialog"]')
+        await dlg.wait_for(timeout=15000)
+    except Exception:
+        return None
+    seen = set()
+    for _ in range(25):
+        hrefs = await dlg.locator('a[role="link"]').evaluate_all("els => els.map(e => e.getAttribute('href'))")
+        before = len(seen)
+        for h in hrefs:
+            if h and re.match(r"^/[^/]+/$", h):
+                u = h.strip("/")
+                if u and u != me:
+                    seen.add(u)
+        await dlg.evaluate("el => { const s=[...el.querySelectorAll('div')].find(d=>d.scrollHeight>d.clientHeight+50); if(s) s.scrollTop=s.scrollHeight; }")
+        await page.wait_for_timeout(900)
+        if len(seen) == before and _ > 2:
+            break
+    await page.keyboard.press("Escape")
+    return seen
+
+
+async def do_unfollow(page) -> str:
+    header = page.locator("header").first
+    btns = header.locator("button, div[role='button']")
+    btn = None
+    for txt in ("Following", "Seurataan"):
+        loc = btns.filter(has_text=txt)
+        if await loc.count() > 0:
+            btn = loc.first
+            break
+    if btn is None:
+        for txt in FOLLOW_TXT:        # button says Follow -> we are NOT following them, nothing to do
+            loc = btns.filter(has_text=re.compile(rf"^\s*{txt}\s*$"))
+            if await loc.count() > 0:
+                return "not-following"
+        return "no-button"
+    await btn.click()
+    await page.wait_for_timeout(1500)
+    item = page.get_by_text(re.compile(r"^\s*(Unfollow|Lopeta seuraaminen|Lopeta seuranta)\s*$"))
+    if await item.count() == 0:
+        await page.keyboard.press("Escape")
+        return "no-unfollow-option"
+    await item.first.click()
+    await page.wait_for_timeout(1800)
+    conf = page.locator("[role='dialog'] button").filter(has_text=re.compile(r"^\s*(Unfollow|Lopeta seuraaminen)\s*$"))
+    if await conf.count() > 0:
+        await conf.first.click()
+        await page.wait_for_timeout(1200)
+    # verify: header button should now say Follow
+    for txt in FOLLOW_TXT:
+        if await btns.filter(has_text=re.compile(rf"^\s*{txt}\s*$")).count() > 0:
+            return "unfollowed"
+    return "unverified"
 
 
 async def jitter(page, ms: int):
@@ -220,11 +327,21 @@ async def view_stories(page, handle: str) -> bool:
 
 async def run(account: str, mode: str):
     cfg = load_cfg(account)
-    if not cfg["targets"]:
+    if not cfg["targets"] and not mode.startswith("unfollow"):
         raise SystemExit("No targets configured (config.yaml `targets:` or accounts/<account>/targets.txt)")
     paths = ensure_account_paths(cfg["username"])
     done = load_done(account)
-    todo = [t for t in cfg["targets"] if mode == "validate" or f"{t}" not in done][:cfg["max_targets"] if mode == "engage" else len(cfg["targets"])]
+    if mode.startswith("unfollow"):
+        raw = yaml.safe_load((ACCOUNTS_ROOT / account / "config.yaml").read_text(encoding="utf-8")) or {}
+        protect = {h.lstrip("@") for h in (raw.get("never_unfollow") or [])}
+        un_cands = unfollow_candidates(account, protect)
+        un_max = int((raw.get("target_engagement") or {}).get("max_unfollows_per_run", 5))
+        print(f"unfollow: {len(un_cands)} candidate(s) followed >= {UNFOLLOW_AFTER_DAYS} days ago via engage; cap {un_max}/run")
+        todo = []
+    else:
+        un_cands = []
+    if not mode.startswith("unfollow"):
+        todo = [t for t in cfg["targets"] if mode == "validate" or f"{t}" not in done][:cfg["max_targets"] if mode == "engage" else len(cfg["targets"])]
     print(f"account @{cfg['username']} · mode {mode} · {len(todo)} target(s)")
     if mode == "engage":
         print("⚠️ engage mode performs follows/likes/story-views. Ctrl-C to abort.")
@@ -234,13 +351,24 @@ async def run(account: str, mode: str):
         page = context.pages[0] if context.pages else await context.new_page()
 
         async def dismiss_cookie():
-            try:
-                b = page.locator("button:has-text('Allow all cookies'), button:has-text('Salli kaikki evästeet'), "
-                                 "button:has-text('Only allow essential'), button:has-text('Decline optional')")
-                if await b.count() > 0:
-                    await b.first.click(force=True); await page.wait_for_timeout(800)
-            except Exception:
-                pass
+            # The consent modal is a React PORTAL that renders LATE (last node in body),
+            # so a single immediate call misses it — poll for up to ~16s. Buttons are real
+            # <button> elems with exact text "Decline optional cookies" / "Allow all cookies".
+            # Prefer declining optional (privacy) and fall back to allow-all so login isn't blocked.
+            rx = re.compile(r"Decline optional cookies|Only allow essential|Kiellä valinnaiset|"
+                            r"Allow all cookies|Salli kaikki evästeet|Hyväksy kaikki", re.I)
+            for _ in range(4):                         # ~2.8s max — enough for a late portal,
+                try:                                   # but no long stall once cookies are accepted
+                    b = page.get_by_role("button", name=rx)
+                    if await b.count() > 0:
+                        await b.first.click(timeout=3000)
+                        await page.wait_for_timeout(600)
+                        print("🍪 cookie-dialogi kuitattu.")
+                        return True
+                except Exception:
+                    pass
+                await page.wait_for_timeout(700)
+            return False                               # no banner (already accepted) — carry on
 
         async def logged_in() -> bool:
             # /accounts/edit/ REQUIRES auth — it redirects to /accounts/login/ when logged out.
@@ -285,7 +413,8 @@ async def run(account: str, mode: str):
                     pass
             if not clicked:
                 await pw.press("Enter")                                # fallback: submit via keyboard
-            await page.wait_for_timeout(6000)
+            await page.wait_for_timeout(2500)                          # brief settle; the human finishes captcha/2FA
+            print("📤 Kirjautuminen lähetetty. Instagram näyttää nyt todennäköisesti captchan/2FA:n.")
 
         # --- MANUAL LOGIN MODE: just open the browser, let the human log in at their own pace ---
         if mode == "login":
@@ -316,19 +445,79 @@ async def run(account: str, mode: str):
             print("✅ already logged in (saved session)")
         else:
             await do_login()
-            ok = False
-            for attempt in range(1, 21):
+            # PAUSE for the human. We must NOT poll logged_in() here — it navigates to
+            # /accounts/edit/ and would yank the page away from the captcha/2FA every time.
+            # Instead we block on Enter (terminal is visible on the same remote desktop),
+            # so the user finishes cookies + captcha + 2FA at their own pace, uninterrupted.
+            print("\n" + "=" * 64)
+            print("👉 VIIMEISTELE KIRJAUTUMINEN avoimessa selaimessa:")
+            print("   1) kuittaa mahdollinen eväste-dialogi")
+            print("   2) ratkaise captcha jos se pyytää")
+            print("   3) syötä 2FA-koodi jos se pyytää")
+            print("   Ota rauhassa aikaa — sivu EI liiku ennen kuin painat Enteriä.")
+            print("=" * 64)
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, input, "   ↵  Paina Enter TÄSSÄ kun olet kirjautunut sisään: ")
+            except Exception:
+                pass
+            if await logged_in():
+                print("✅ login confirmed — sessio tallennettu.")
+            else:
+                # one grace retry in case IG was still settling right after Enter
+                await page.wait_for_timeout(4000)
                 if await logged_in():
-                    ok = True
-                    break
-                print(f"⚠️ NOT logged in yet (2FA / checkpoint / wrong creds?). Finish login in the "
-                      f"OPEN BROWSER via remote desktop. Re-checking in 15s… [{attempt}/20]")
-                await page.wait_for_timeout(15000)
-            if not ok:
-                print("❌ Login not confirmed — aborting WITHOUT touching any targets.")
+                    print("✅ login confirmed — sessio tallennettu.")
+                else:
+                    print("❌ Login not confirmed — aborting WITHOUT touching any targets.")
+                    print("   (Jos olit varmasti sisällä, aja komento uudelleen — sessio saattaa jo olla tallessa.)")
+                    await context.close()
+                    return
+
+        if mode.startswith("unfollow"):
+            dry = mode == "unfollow-dry"
+            if not un_cands:
+                print("nothing to unfollow yet.")
                 await context.close()
                 return
-            print("✅ login confirmed")
+            fol = await own_followers(page, cfg["username"])
+            if fol is None:
+                print("❌ could not read the followers list - aborting WITHOUT unfollowing anyone.")
+                await context.close()
+                return
+            print(f"followers of @{cfg['username']} read: {len(fol)} -> {sorted(fol)}")
+            done_n = 0
+            for h in un_cands:
+                if h in fol:
+                    print(f"  @{h}: follows back - KEEP")
+                    mark_unfollowed(account, h, "kept-follows-back")
+                    continue
+                if done_n >= un_max:
+                    break
+                if dry:
+                    print(f"  @{h}: would UNFOLLOW (no follow-back)")
+                    done_n += 1
+                    continue
+                try:
+                    await page.goto(f"https://www.instagram.com/{h}/", wait_until="domcontentloaded", timeout=40000)
+                    await page.wait_for_timeout(3000)
+                    await human_scroll(page, rounds=1)
+                    r = await do_unfollow(page)
+                except Exception as e:
+                    print(f"  @{h}: error {str(e)[:60]}")
+                    continue
+                print(f"  @{h}: {r}")
+                if r == "unfollowed":
+                    mark_unfollowed(account, h, r)
+                if r == "unfollowed":
+                    done_n += 1
+                elif r == "no-unfollow-option":
+                    print("  ⚠️ unfollow menu not found - stopping to be safe.")
+                    break
+                await jitter(page, cfg["delay"] * 2)
+            await context.close()
+            print("done.")
+            return
 
         for i, handle in enumerate(todo, 1):
             try:
@@ -370,7 +559,7 @@ async def run(account: str, mode: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("account")
-    ap.add_argument("mode", nargs="?", default="validate", choices=["login", "validate", "engage"])
+    ap.add_argument("mode", nargs="?", default="validate", choices=["login", "validate", "engage", "unfollow", "unfollow-dry"])
     a = ap.parse_args()
     asyncio.run(run(a.account, a.mode))
 
